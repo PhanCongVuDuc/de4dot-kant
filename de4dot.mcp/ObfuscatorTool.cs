@@ -46,28 +46,69 @@ namespace de4dot.mcp {
 			}
 		}
 
-		[McpServerTool(Name = "deobfuscate"), Description("Deobfuscate current file using given method")]
+		[McpServerTool(Name = "deobfuscate"), Description(
+			"Deobfuscate a .NET assembly the same way the de4dot CLI does (deobfuscate -> rename -> save) and write the result to disk. " +
+			"Returns the detected obfuscator and the output path.")]
 		public static async Task<AIContent> Deobfuscate(
 			McpServer mcpServer,
 			DeobfuscationSessionManager manager,
-			[Description("Method to deobfuscate")] string? method,
-			CancellationToken cancellationToken) {
+			[Description("Input assembly. Omit to reuse the file from the last detectObfuscator call.")] string? obfuscatedFile = null,
+			[Description("Output path. Default: '<name>-cleaned.dll' next to the input.")] string? outputFile = null,
+			[Description("Rename obfuscated symbols (CLI default). Use false for WPF/XAML assemblies (= --dont-rename).")] bool rename = true,
+			[Description("Keep obfuscator types/fields/methods (= --keep-types).")] bool keepTypes = false,
+			[Description("Deobfuscate control flow (CLI default true).")] bool controlFlow = true,
+			[Description("Force an obfuscator by type/name, e.g. 'co' or 'Crypto Obfuscator'. Omit to auto-detect.")] string? method = null,
+			CancellationToken cancellationToken = default) {
 			try {
-				var session = manager.GetSession(mcpServer.SessionId!);
-				var file = session.File;
+				var session = manager.GetSession(mcpServer.SessionId);
+				string input = obfuscatedFile ?? session.File?.Filename
+					?? throw new ArgumentException("Chưa có file: truyền obfuscatedFile hoặc gọi detectObfuscator trước.");
+				input = Path.GetFullPath(input);
+				string output = Path.GetFullPath(outputFile ?? Path.Combine(
+					Path.GetDirectoryName(input)!, Path.GetFileNameWithoutExtension(input) + "-cleaned" + Path.GetExtension(input)));
+
+				// Tuỳ chọn như CLI (detectObfuscator chỉ dò nhanh: tắt control-flow, không giải chuỗi -> không dùng lại).
+				var options = new ObfuscatedFile.Options {
+					Filename = input,
+					NewFilename = output,
+					ControlFlowDeobfuscation = controlFlow,
+					KeepObfuscatorTypes = keepTypes,
+					StringDecrypterType = DecrypterType.Default,
+					RenamerFlags = DefaultRenamerFlags,
+				};
+				var file = new ObfuscatedFile(options, new ModuleContext(session.AssemblyResolver), new NewAppDomainAssemblyClientFactory());
 				file.DeobfuscatorContext = session.DeobfuscatorContext;
-				file.Load(CreateDeobfuscator(method));
-				var deob = file.Deobfuscator;
+				file.Load(method == null ? CreateDeobfuscators() : CreateDeobfuscator(method));
+
 				file.DeobfuscateBegin();
 				file.Deobfuscate();
 				file.DeobfuscateEnd();
+				if (rename)
+					new de4dot.code.renamer.Renamer(session.DeobfuscatorContext, new List<IObfuscatedFile> { file }, DefaultRenamerFlags).Rename();
+				file.Save();
+
+				session.File = file;
 				await mcpServer.SendNotificationAsync("notifications/resources/list_changed");
-				//session.AssemblyResolver.Remove(file.ModuleDefMD);
-				return new TextContent(file.NewFilename);
+				return new TextContent($"{file.Deobfuscator.TypeLong} -> {output}");
 			} catch (Exception ex) {
 				return new ErrorContent(ex.Message);
 			}
 		}
+
+		// Giống mặc định của de4dot.cui FilesDeobfuscator.Options.
+		static readonly de4dot.code.renamer.RenamerFlags DefaultRenamerFlags =
+			de4dot.code.renamer.RenamerFlags.RenameNamespaces |
+			de4dot.code.renamer.RenamerFlags.RenameTypes |
+			de4dot.code.renamer.RenamerFlags.RenameProperties |
+			de4dot.code.renamer.RenamerFlags.RenameEvents |
+			de4dot.code.renamer.RenamerFlags.RenameFields |
+			de4dot.code.renamer.RenamerFlags.RenameMethods |
+			de4dot.code.renamer.RenamerFlags.RenameMethodArgs |
+			de4dot.code.renamer.RenamerFlags.RenameGenericParams |
+			de4dot.code.renamer.RenamerFlags.RestorePropertiesFromNames |
+			de4dot.code.renamer.RenamerFlags.RestoreEventsFromNames |
+			de4dot.code.renamer.RenamerFlags.RestoreProperties |
+			de4dot.code.renamer.RenamerFlags.RestoreEvents;
 
 		[McpServerTool(Name = "saveDeobfuscated"), Description("Return deobfuscated file")]
 		public static CallToolResult SaveDeobfuscated(
@@ -78,7 +119,8 @@ namespace de4dot.mcp {
 				var session = manager.GetSession(mcpServer.SessionId!);
 				var file = session.File;
 				var fileName = Path.GetFileName(file.NewFilename);
-				return new CallToolResult() { IsError = true, Content = [new ResourceLinkBlock() { Name = fileName, Uri = $"de4dot://files/{fileName}" }] };
+				// Thành công -> IsError = false (bản gốc để true khiến client coi là lỗi).
+				return new CallToolResult() { IsError = false, Content = [new ResourceLinkBlock() { Name = fileName, Uri = $"de4dot://files/{fileName}" }] };
 			}
 			catch (Exception ex) {
 				return new CallToolResult() { IsError = true, Content = [new TextContentBlock() { Text = ex.Message }] };

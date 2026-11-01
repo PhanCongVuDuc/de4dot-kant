@@ -4,6 +4,23 @@ using de4dot.mcp;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
+// --stdio: chạy như MCP server cục bộ (client tự khởi động tiến trình, giao tiếp qua stdin/stdout).
+// Mặc định (không cờ): HTTP như bản gốc.
+if (args.Contains("--stdio")) {
+	// stdout là kênh giao thức MCP; log của lõi de4dot (in qua Console) phải sang stderr.
+	Console.SetOut(Console.Error);
+	var hostBuilder = Host.CreateApplicationBuilder(args.Where(a => a != "--stdio").ToArray());
+	hostBuilder.Logging.ClearProviders();
+	hostBuilder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
+	hostBuilder.Services.AddMcpServer()
+		.WithStdioServerTransport()
+		.WithTools<ObfuscatorTool>()
+		.WithResources<ObfuscatedFileResource>();
+	hostBuilder.Services.AddSingleton<DeobfuscationSessionManager>();
+	await hostBuilder.Build().RunAsync();
+	return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddMcpServer()
 	.WithHttpTransport()
