@@ -33,6 +33,7 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 		BoolOption decryptConstants;
 		BoolOption inlineMethods;
 		BoolOption fixLdnull;
+		BoolOption renestTypes;
 
 		public DeobfuscatorInfo()
 			: base(DEFAULT_REGEX) {
@@ -40,6 +41,7 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 			decryptConstants = new BoolOption(null, MakeArgName("consts"), "Decrypt constants", true);
 			inlineMethods = new BoolOption(null, MakeArgName("inline"), "Inline short methods", true);
 			fixLdnull = new BoolOption(null, MakeArgName("ldnull"), "Restore ldnull instructions", true);
+			renestTypes = new BoolOption(null, MakeArgName("renest"), "Restore compiler-generated types: state machine method names (MoveNext...) and nesting of state machines/closures in their owner type", true);
 		}
 
 		public override string Name => THE_NAME;
@@ -52,6 +54,7 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 				DecryptConstants = decryptConstants.Get(),
 				InlineMethods = inlineMethods.Get(),
 				FixLdnull = fixLdnull.Get(),
+				RenestTypes = renestTypes.Get(),
 			});
 
 		protected override IEnumerable<Option> GetOptionsInternal() =>
@@ -60,6 +63,7 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 				decryptConstants,
 				inlineMethods,
 				fixLdnull,
+				renestTypes,
 			};
 	}
 
@@ -91,6 +95,7 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 			public bool DecryptConstants { get; set; }
 			public bool InlineMethods { get; set; }
 			public bool FixLdnull { get; set; }
+			public bool RenestTypes { get; set; }
 		}
 
 		public override string Type => DeobfuscatorInfo.THE_TYPE;
@@ -266,6 +271,10 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 				AddTypeToBeRemoved(stringDecrypter.Type, "String decrypter type");
 			}
 			AddTypesToBeRemoved(inlinedMethodTypes.Types, "Inlined methods type");
+			if (options.RenestTypes) {
+				new StateMachineMethodRestorer(module).Restore();
+				new NestedTypeRestorer(module).Restore();
+			}
 			base.DeobfuscateEnd();
 		}
 

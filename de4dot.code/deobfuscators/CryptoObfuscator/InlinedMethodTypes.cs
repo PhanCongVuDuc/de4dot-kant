@@ -78,11 +78,32 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 			if (!IsValidType(type))
 				return false;
 
-			if (type.HasMethods)
-				return false;
+			// Biến thể CO mới (gặp ở DiRoots ProSheets 2.4.2, 2026; attribute version bị gỡ nên không rõ số
+			// version): holder của field-null có thêm 1 method rỗng `private static void X() {}` để né đúng
+			// điều kiện "không có method" này. Chấp nhận method static, không tham số, thân chỉ `ret`.
+			foreach (var m in type.Methods) {
+				if (!IsEmptyDummyMethod(m))
+					return false;
+			}
 			if (type.Fields.Count != 1)
 				return false;
 
+			return true;
+		}
+
+		static bool IsEmptyDummyMethod(MethodDef m) {
+			if (!m.IsStatic || m.IsConstructor || m.MethodSig.Params.Count != 0)
+				return false;
+			if (m.ReturnType.ElementType != ElementType.Void)
+				return false;
+			var body = m.Body;
+			if (body == null)
+				return false;
+			foreach (var instr in body.Instructions) {
+				var code = instr.OpCode.Code;
+				if (code != dnlib.DotNet.Emit.Code.Nop && code != dnlib.DotNet.Emit.Code.Ret)
+					return false;
+			}
 			return true;
 		}
 

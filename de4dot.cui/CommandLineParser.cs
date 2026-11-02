@@ -133,6 +133,9 @@ namespace de4dot.cui {
 					}
 				}
 			}));
+			miscOptions.Add(new NoArgOption(null, "fix-name-clashes", "Rename (non-visible) members whose names are legal in IL but not in C# (same name as the declaring type, field/property vs method). Use with --keep-names/--dont-rename", () => {
+				filesOptions.FixNameClashes = true;
+			}));
 			miscOptions.Add(new NoArgOption(null, "dont-create-params", "Don't create method params when renaming", () => {
 				filesOptions.RenamerFlags |= RenamerFlags.DontCreateNewParamDefs;
 			}));

@@ -41,6 +41,7 @@ namespace de4dot.cui {
 			public bool DetectObfuscators { get; set; }
 			public RenamerFlags RenamerFlags { get; set; }
 			public bool RenameSymbols { get; set; }
+			public bool FixNameClashes { get; set; }
 			public bool ControlFlowDeobfuscation { get; set; }
 			public bool KeepObfuscatorTypes { get; set; }
 			public bool OneFileAtATime { get; set; }
@@ -384,10 +385,14 @@ namespace de4dot.cui {
 		}
 
 		void Rename(IEnumerable<IObfuscatedFile> theFiles) {
-			if (!options.RenameSymbols)
-				return;
-			var renamer = new Renamer(deobfuscatorContext, theFiles, options.RenamerFlags);
-			renamer.Rename();
+			if (options.RenameSymbols) {
+				var renamer = new Renamer(deobfuscatorContext, theFiles, options.RenamerFlags);
+				renamer.Rename();
+			}
+			if (options.FixNameClashes) {
+				foreach (var file in theFiles)
+					new CSharpNameClashFixer(file.ModuleDefMD).Fix();
+			}
 		}
 	}
 }
