@@ -33,15 +33,51 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 
 		public NestedTypeRestorer(ModuleDef module) => this.module = module;
 
+		// TypeRef trỏ vào chính type của module (CO sinh ra kiểu này) resolve THEO TÊN + chuỗi declaring type:
+		// chuyển type sang chủ khác mà không sửa TypeRef là gãy ("Could not resolve TypeRef Owner/Nested").
+		Dictionary<TypeDef, List<TypeRef>> selfTypeRefs;
+
+		void IndexSelfTypeRefs() {
+			selfTypeRefs = new Dictionary<TypeDef, List<TypeRef>>();
+			foreach (var tr in module.GetTypeRefs()) {
+				var td = tr.ResolveTypeDef();
+				if (td == null || td.Module != module)
+					continue;
+				if (!selfTypeRefs.TryGetValue(td, out var list))
+					selfTypeRefs[td] = list = new List<TypeRef>();
+				list.Add(tr);
+			}
+		}
+
+		IResolutionScope MakeScope(TypeDef owner) {
+			if (owner.DeclaringType == null)
+				return new TypeRefUser(module, owner.Namespace, owner.Name, module);
+			return new TypeRefUser(module, UTF8String.Empty, owner.Name, MakeScope(owner.DeclaringType));
+		}
+
+		void FixSelfTypeRefs(TypeDef type, TypeDef newOwner) {
+			if (!selfTypeRefs.TryGetValue(type, out var list))
+				return;
+			foreach (var tr in list) {
+				tr.Namespace = UTF8String.Empty;
+				tr.Name = type.Name;
+				tr.ResolutionScope = MakeScope(newOwner);
+			}
+		}
+
 		public int Restore() {
+			IndexSelfTypeRefs();
 			RestoreStateMachines();
 			// Closure lồng closure: chủ của closure trong chỉ biết được sau khi closure ngoài đã về chỗ.
 			for (int pass = 0; pass < 8; pass++) {
 				if (!RestoreClosures())
 					break;
 			}
-			if (moved != 0)
+			if (moved != 0) {
+				// dnlib cache tra TypeDef theo tên (TypeDefFinder) — dựng trước khi chuyển (vd log -v in TypeRef) là cũ.
+				module.ResetTypeDefFindCache();
 				Logger.v("Re-nested {0} compiler-generated types", moved);
+			}
 			return moved;
 		}
 
@@ -189,6 +225,7 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 				type.Name = (type.Name.String) + "_";
 
 			newOwner.NestedTypes.Add(type);
+			FixSelfTypeRefs(type, newOwner);
 			moved++;
 			Logger.v("Re-nest: {0} -> {1}", Utils.RemoveNewlines(name), Utils.RemoveNewlines(newOwner.FullName));
 		}

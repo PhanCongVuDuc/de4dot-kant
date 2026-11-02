@@ -561,12 +561,76 @@ namespace de4dot.code {
 				name = null;
 		}
 
-		public void DeobfuscateEnd() {
-			foreach (var m in inlineCandidate) {
-				m.Value.DeclaringType.Remove(m.Value);
+		/// Thay `call wrapper` bằng lệnh bên trong wrapper (`ldarg..; call/callvirt/newobj X; ret`).
+		/// Phải chép cả OPCODE: wrapper `newobj X::.ctor` mà chỉ đổi operand thành `call X::.ctor` là sai ngữ nghĩa.
+		bool InlineWrapperCalls(MethodDef method) {
+			if (inlineCandidate == null || inlineCandidate.Count == 0 || method.Body == null)
+				return false;
+			var rewritten = false;
+			foreach (var instr in method.Body.Instructions) {
+				if (instr.OpCode.Code != Code.Call)
+					continue;
+				if (!(instr.Operand is IMethod targetMethod))
+					continue;
+				if (!inlineCandidate.TryGetValue(targetMethod.ResolveMethodDef()?.FullName ?? targetMethod.FullName, out var methodToInline))
+					continue;
+				if (methodToInline == method)
+					continue;
+				var inner = methodToInline.Body.Instructions[methodToInline.Parameters.Count];
+				instr.OpCode = inner.OpCode;
+				instr.Operand = inner.Operand;
+				rewritten = true;
 			}
+			return rewritten;
+		}
+
+		public void DeobfuscateEnd() {
+			// Chỉ xoá wrapper KHÔNG còn ai tham chiếu và không nhìn thấy từ assembly khác (public API của
+			// assembly có thể được DLL khác gọi). Trước đây xoá vô điều kiện -> "A method was removed that is
+			// still referenced", decompiler mất code.
+			var stillReferenced = new HashSet<MethodDef>();
+			foreach (var m in GetAllMethods()) {
+				if (m.Body == null)
+					continue;
+				foreach (var instr in m.Body.Instructions) {
+					if (instr.Operand is IMethod im && !(instr.Operand is MethodSpec)) {
+						var md = im.ResolveMethodDef();
+						if (md != null)
+							stillReferenced.Add(md);
+					}
+					else if (instr.Operand is MethodSpec ms) {
+						var md = ms.Method?.ResolveMethodDef();
+						if (md != null)
+							stillReferenced.Add(md);
+					}
+				}
+			}
+			int removed = 0, kept = 0;
+			foreach (var m in inlineCandidate) {
+				var md = m.Value;
+				if (md.DeclaringType == null)
+					continue;
+				if (stillReferenced.Contains(md) || IsVisibleOutside(md)) {
+					kept++;
+					continue;
+				}
+				md.DeclaringType.Remove(md);
+				removed++;
+			}
+			if (inlineCandidate.Count != 0)
+				Logger.v("Inlined wrapper methods: removed {0}, kept {1} (still referenced or externally visible)", removed, kept);
 
 			DeobfuscateCleanUp();
+		}
+
+		static bool IsVisibleOutside(MethodDef m) {
+			if (!(m.IsPublic || m.IsFamily || m.IsFamilyOrAssembly))
+				return false;
+			for (var t = m.DeclaringType; t != null; t = t.DeclaringType) {
+				if (t.IsNested ? !(t.IsNestedPublic || t.IsNestedFamily || t.IsNestedFamilyOrAssembly) : !t.IsPublic)
+					return false;
+			}
+			return true;
 		}
 
 		public void DeobfuscateCleanUp() {
@@ -645,22 +709,8 @@ namespace de4dot.code {
 			if (!HasNonEmptyBody(method))
 				return;
 
-			var rewritten = false;
-			for (var i = 0; i < method.Body.Instructions.Count; i++) {
-				var instr = method.Body.Instructions[i];
-				if (instr.OpCode == OpCodes.Call) {
-					var targetMethod = (IMethod?)instr.Operand;
-					if (targetMethod is null) continue;
-					if (inlineCandidate.TryGetValue(targetMethod.ResolveMethodDef()?.FullName ?? targetMethod.FullName, out var methodToInline)) {
-						instr.Operand = methodToInline.Body.Instructions[methodToInline.Parameters.Count].Operand;
-						rewritten = true;
-					}
-				}
-			}
-
-			if (rewritten) {	
+			if (InlineWrapperCalls(method))
 				method.Body.KeepOldMaxStack = true;
-			}
 
 			var blocks = new Blocks(method);
 
@@ -687,6 +737,9 @@ namespace de4dot.code {
 
 			blocks.GetCode(out var allInstructions, out var allExceptionHandlers);
 			DotNetUtils.RestoreBody(method, allInstructions, allExceptionHandlers);
+			// Lượt 2: lời gọi tới wrapper chỉ lộ ra SAU khi gỡ proxy (DeobfuscateMethodEnd) — trước đây bị bỏ sót,
+			// wrapper vẫn bị xoá -> tham chiếu treo (DiRoots: CreateTempExportDirectoryContext, ilspy mất cả khối code).
+			InlineWrapperCalls(method);
 
 			if (isVerbose && numRemovedLocals > 0)
 				Logger.v("Removed {0} unused local(s)", numRemovedLocals);

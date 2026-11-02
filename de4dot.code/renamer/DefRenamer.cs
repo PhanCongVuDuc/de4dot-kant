@@ -24,7 +24,18 @@ namespace de4dot.code.renamer {
 	public class DefRenamer {
 		readonly Dictionary<IMemberDef, List<MemberRef>> refs = new Dictionary<IMemberDef, List<MemberRef>>();
 
+		readonly Dictionary<TypeDef, List<TypeRef>> typeRefs = new Dictionary<TypeDef, List<TypeRef>>();
+
 		public DefRenamer(ModuleDef module) {
+			// TypeRef trỏ vào type của chính module cũng resolve theo tên -> đổi tên TypeDef phải đổi theo.
+			foreach (var tr in module.GetTypeRefs()) {
+				var td = tr.ResolveTypeDef();
+				if (td == null || td.Module != module)
+					continue;
+				if (!typeRefs.TryGetValue(td, out var tl))
+					typeRefs[td] = tl = new List<TypeRef>();
+				tl.Add(tr);
+			}
 			var seen = new HashSet<MemberRef>();
 			foreach (var type in module.GetTypes()) {
 				foreach (var method in type.Methods) {
@@ -67,6 +78,10 @@ namespace de4dot.code.renamer {
 			if (refs.TryGetValue(def, out var list)) {
 				foreach (var mr in list)
 					mr.Name = newName;
+			}
+			if (def is TypeDef td && typeRefs.TryGetValue(td, out var trs)) {
+				foreach (var tr in trs)
+					tr.Name = td.Name;
 			}
 		}
 	}

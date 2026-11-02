@@ -33,6 +33,8 @@ namespace de4dot.code.renamer {
 			renamer = new DefRenamer(module);
 			foreach (var type in module.GetTypes())
 				FixType(type);
+			if (renamed != 0)
+				module.ResetTypeDefFindCache();
 			if (renamed != 0 || skipped != 0)
 				Logger.n("C# name clashes: renamed {0}, skipped {1} (externally visible)", renamed, skipped);
 		}
@@ -99,7 +101,7 @@ namespace de4dot.code.renamer {
 					newName += "_";
 				if (member is TypeDef nt) {
 					int tick = nt.Name.String.IndexOf('`');
-					nt.Name = tick < 0 ? newName : newName + nt.Name.String.Substring(tick);
+					renamer.Rename(nt, tick < 0 ? newName : newName + nt.Name.String.Substring(tick));
 				}
 				else
 					renamer.Rename(member, newName);
