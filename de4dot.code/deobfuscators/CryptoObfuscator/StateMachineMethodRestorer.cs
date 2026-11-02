@@ -39,6 +39,10 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 					var iface = decl?.DeclaringType;
 					if (iface == null)
 						continue;
+					// Tên csc còn nguyên (MoveNext, System.IDisposable.Dispose, ...IEnumerator<string>.get_Current)
+					// luôn kết thúc bằng tên method của interface -> không bị CO đổi, giữ nguyên.
+					if (IsCscName(method.Name.String, decl.Name.String))
+						continue;
 					var newName = CsName(iface, decl.Name.String);
 					if (newName == null || method.Name == newName)
 						continue;
@@ -56,6 +60,8 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 					if (dot < 0)
 						continue;
 					var newName = g.Substring(0, dot) + "." + g.Substring(dot + 5);
+					if (IsCscName(prop.Name.String, g.Substring(dot + 5)))
+						continue;
 					if (prop.Name != newName) {
 						renamer.Rename(prop, newName);
 						n++;
@@ -66,6 +72,9 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 				Logger.v("Restored {0} state machine method names", n);
 			return n;
 		}
+
+		static bool IsCscName(string name, string ifaceMember) =>
+			name == ifaceMember || name.EndsWith("." + ifaceMember);
 
 		static string CsName(ITypeDefOrRef iface, string methodName) {
 			var ns = iface.Namespace ?? "";

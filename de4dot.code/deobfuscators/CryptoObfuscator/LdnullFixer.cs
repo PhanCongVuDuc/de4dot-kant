@@ -35,8 +35,38 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 		public void Restore() {
 			var fields = FindFieldTypes(FindFieldTypes());
 			Restore(fields);
-			foreach (var field in fields.Keys)
-				inlinedMethodTypes.Add(field.DeclaringType);
+			// Holder biến thể mới có method rỗng (InlinedMethodTypes.IsValidFieldType): xoá holder thì xoá luôn method
+			// đó -> chỉ xoá khi KHÔNG ai gọi nó, kẻo để lại tham chiếu treo. ldnull ở trên vẫn đúng dù có giữ holder.
+			var calledHolders = FindCalledHolders(fields.Keys);
+			foreach (var field in fields.Keys) {
+				if (!calledHolders.Contains(field.DeclaringType))
+					inlinedMethodTypes.Add(field.DeclaringType);
+			}
+		}
+
+		HashSet<TypeDef> FindCalledHolders(IEnumerable<FieldDef> fields) {
+			var holders = new HashSet<TypeDef>();
+			foreach (var f in fields) {
+				if (f.DeclaringType != null && f.DeclaringType.HasMethods)
+					holders.Add(f.DeclaringType);
+			}
+			var called = new HashSet<TypeDef>();
+			if (holders.Count == 0)
+				return called;
+			foreach (var type in module.GetTypes()) {
+				foreach (var method in type.Methods) {
+					if (method.Body == null)
+						continue;
+					foreach (var instr in method.Body.Instructions) {
+						if (!(instr.Operand is IMethod im))
+							continue;
+						var md = im.ResolveMethodDef();
+						if (md?.DeclaringType != null && holders.Contains(md.DeclaringType) && md.DeclaringType != type)
+							called.Add(md.DeclaringType);
+					}
+				}
+			}
+			return called;
 		}
 
 		FieldDefAndDeclaringTypeDict<FieldDef> FindFieldTypes() {

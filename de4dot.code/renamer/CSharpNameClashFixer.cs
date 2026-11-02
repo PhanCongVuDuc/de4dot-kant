@@ -82,13 +82,27 @@ namespace de4dot.code.renamer {
 			foreach (var e in type.Events)
 				eventNames.Add(e.Name.String);
 
+			// Nested type với nhau được trùng tên nếu KHÁC arity (Foo và Foo<T> hợp lệ trong C#) -> so theo tên
+			// metadata có `N. Nested type với member khác loại thì so theo tên C# (bỏ `N).
+			var typeKeys = new HashSet<string>();
+			var nestedNames = new HashSet<string>();
+
 			foreach (var member in members) {
-				var name = member is TypeDef td ? CsName(td.Name.String) : member.Name.String;
+				var td = member as TypeDef;
+				var name = td != null ? CsName(td.Name.String) : member.Name.String;
 				bool isEventBackingField = member is FieldDef && eventNames.Contains(name);
 				if (isEventBackingField)
 					continue;
-				if (!taken.Contains(name)) {
-					taken.Add(name);
+				bool clash = td != null
+					? taken.Contains(name) || typeKeys.Contains(td.Name.String)
+					: taken.Contains(name) || nestedNames.Contains(name);
+				if (!clash) {
+					if (td != null) {
+						typeKeys.Add(td.Name.String);
+						nestedNames.Add(name);
+					}
+					else
+						taken.Add(name);
 					continue;
 				}
 				if (IsExternallyVisible(member)) {
@@ -97,8 +111,10 @@ namespace de4dot.code.renamer {
 					continue;
 				}
 				var newName = name + "_";
-				while (taken.Contains(newName))
+				while (taken.Contains(newName) || nestedNames.Contains(newName))
 					newName += "_";
+				if (td != null)
+					nestedNames.Add(newName);
 				if (member is TypeDef nt) {
 					int tick = nt.Name.String.IndexOf('`');
 					renamer.Rename(nt, tick < 0 ? newName : newName + nt.Name.String.Substring(tick));

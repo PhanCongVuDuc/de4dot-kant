@@ -146,6 +146,13 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 				// Chỉ chuyển type đang "lạc chỗ": top-level, hoặc lồng trong holder compiler-generated.
 				if (c.DeclaringType != null && !IsCompilerGenerated(c.DeclaringType))
 					continue;
+				// csc VỐN đặt top-level: anonymous type, <PrivateImplementationDetails>, attribute nhúng
+				// (EmbeddedAttribute/NullableAttribute...) -> không phải do CO kéo ra, không được chuyển.
+				if (IsTopLevelByDesign(c))
+					continue;
+				// Tên còn nguyên kiểu csc (<>c__DisplayClass..., <Foo>d__3) thì vị trí cũng nguyên -> CO không đụng.
+				if (c.Name.String.StartsWith("<"))
+					continue;
 				Move(c, o);
 				any = true;
 			}
@@ -188,6 +195,44 @@ namespace de4dot.code.deobfuscators.CryptoObfuscator {
 					return true;
 			}
 			return false;
+		}
+
+		static bool IsTopLevelByDesign(TypeDef c) {
+			var top = c;
+			while (top.DeclaringType != null)
+				top = top.DeclaringType;
+			var n = top.Name.String;
+			if (n.StartsWith("<PrivateImplementationDetails>") || n.StartsWith("<>f__AnonymousType"))
+				return true;
+			foreach (var ca in c.CustomAttributes) {
+				if (ca.TypeFullName == "Microsoft.CodeAnalysis.EmbeddedAttribute")
+					return true;
+			}
+			if (c.Namespace == "Microsoft.CodeAnalysis" || c.Namespace == "System.Runtime.CompilerServices")
+				return true;
+			return IsAnonymousTypeShape(c);
+		}
+
+		/// Anonymous type (tên đã bị obfuscate nên phải nhận theo hình dạng): generic, mỗi generic param một
+		/// property chỉ đọc, override Equals/GetHashCode/ToString, không interface.
+		static bool IsAnonymousTypeShape(TypeDef t) {
+			if (t.DeclaringType != null || !t.HasGenericParameters || t.HasInterfaces)
+				return false;
+			if (t.Properties.Count != t.GenericParameters.Count)
+				return false;
+			foreach (var p in t.Properties) {
+				if (p.GetMethod == null || p.SetMethod != null)
+					return false;
+			}
+			bool eq = false, hash = false, str = false;
+			foreach (var m in t.Methods) {
+				if (!m.IsVirtual)
+					continue;
+				if (m.Name == "Equals" && m.MethodSig.Params.Count == 1) eq = true;
+				else if (m.Name == "GetHashCode" && m.MethodSig.Params.Count == 0) hash = true;
+				else if (m.Name == "ToString" && m.MethodSig.Params.Count == 0) str = true;
+			}
+			return eq && hash && str;
 		}
 
 		static bool IsCompilerGenerated(TypeDef type) {
