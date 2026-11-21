@@ -91,24 +91,36 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 		}
 
 		bool RebuildBody(MethodDef method, NecroBitMethodInfo info) {
-			// First try with EH; if dnlib rejects the EH section, fall back to IL only
-			// (same result the pointer-only dump would give, never worse).
-			if (info.eh != null) {
-				var body = TryBuild(method, info, info.eh);
-				if (body != null && body.HasExceptionHandlers) {
-					method.Body = body;
+			var plain = TryBuild(method, info, null);
+			if (plain == null)
+				return false;
+
+			// A method can only have exception handlers if its IL contains the
+			// EH-exit opcodes (leave/endfinally/endfilter). This exact gate avoids
+			// attaching a false-positive EH section that merely looked valid, which
+			// would give the decompiler a bogus try/catch and break its stack analysis.
+			if (info.eh != null && MayHaveEh(plain)) {
+				var withEh = TryBuild(method, info, info.eh);
+				if (withEh != null && withEh.HasExceptionHandlers) {
+					method.Body = withEh;
 					method.Body.InitLocals = info.initLocals;
 					EhCount++;
 					return true;
 				}
 				EhFailed++;
 			}
-			var plain = TryBuild(method, info, null);
-			if (plain == null)
-				return false;
 			method.Body = plain;
 			method.Body.InitLocals = info.initLocals;
 			return true;
+		}
+
+		static bool MayHaveEh(CilBody body) {
+			foreach (var ins in body.Instructions) {
+				var c = ins.OpCode.Code;
+				if (c == Code.Leave || c == Code.Leave_S || c == Code.Endfinally || c == Code.Endfilter)
+					return true;
+			}
+			return false;
 		}
 
 		CilBody TryBuild(MethodDef method, NecroBitMethodInfo info, byte[] eh) {
