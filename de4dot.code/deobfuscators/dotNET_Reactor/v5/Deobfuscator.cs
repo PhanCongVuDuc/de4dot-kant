@@ -42,10 +42,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 		BoolOption removeNamespaces;
 		BoolOption removeAntiStrongName;
 		BoolOption renameShort;
+		BoolOption necroBit;
 
 		public DeobfuscatorInfo()
 			: base(DEFAULT_REGEX) {
 			decryptMethods = new BoolOption(null, MakeArgName("methods"), "Decrypt methods", true);
+			necroBit = new BoolOption(null, MakeArgName("necrobit"), "Dynamically restore NecroBit (JIT-hook) method bodies + EH by running the module cctor", true);
 			decryptBools = new BoolOption(null, MakeArgName("bools"), "Decrypt booleans", true);
 			restoreTypes = new BoolOption(null, MakeArgName("types"), "Restore types (object -> real type)", true);
 			inlineMethods = new BoolOption(null, MakeArgName("inline"), "Inline short methods", true);
@@ -73,6 +75,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 				RemoveNamespaces = removeNamespaces.Get(),
 				RemoveAntiStrongName = removeAntiStrongName.Get(),
 				RenameShort = renameShort.Get(),
+				NecroBitDynamic = necroBit.Get(),
 			});
 
 		protected override IEnumerable<Option> GetOptionsInternal() =>
@@ -87,6 +90,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 				removeNamespaces,
 				removeAntiStrongName,
 				renameShort,
+				necroBit,
 			};
 	}
 
@@ -106,6 +110,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 		AntiStrongName antiStrongname;
 		EmptyClass emptyClass;
 		ProxyCallFixer proxyCallFixer;
+		NecroBitMethodsRestorer necroBit;
 
 		bool unpackedNativeFile = false;
 		bool canRemoveDecrypterType = true;
@@ -122,6 +127,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 			public bool RemoveNamespaces { get; set; }
 			public bool RemoveAntiStrongName { get; set; }
 			public bool RenameShort { get; set; }
+			public bool NecroBitDynamic { get; set; }
 		}
 
 		public override string Type => DeobfuscatorInfo.THE_TYPE;
@@ -414,6 +420,12 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 			if (!options.DecryptMethods)
 				return false;
 
+			// NecroBit (JIT-hook) bodies are not statically decryptable; the static
+			// decrypter below would throw "Could not initialize decrypter". Hand the
+			// whole job to the dynamic restorer in DeobfuscateBegin instead.
+			if (options.NecroBitDynamic && NecroBitMethodsRestorer.IsPresent(module))
+				return false;
+
 			var tokenToNativeCode = new Dictionary<uint,byte[]>();
 			if (!methodsDecrypter.Decrypt(peImage, DeobfuscatedFile, ref dumpedMethods, tokenToNativeCode, unpackedNativeFile))
 				return false;
@@ -505,6 +517,31 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 
 		public override void DeobfuscateBegin() {
 			base.DeobfuscateBegin();
+
+			// NecroBit (JIT-hook / bulk-decrypt) variant: the static methods decrypter
+			// cannot touch it, so recover the real bodies dynamically before any other
+			// pass runs (they all need real IL). No-op unless the shape gate matches.
+			if (options.NecroBitDynamic && NecroBitMethodsRestorer.IsPresent(module)) {
+				necroBit = new NecroBitMethodsRestorer(module);
+				try {
+					if (necroBit.Restore()) {
+						Logger.n("Restored {0} NecroBit method bodies ({1} with EH, {2} EH fell back) from '{3}'",
+							necroBit.RestoredCount, necroBit.EhCount, necroBit.EhFailed, necroBit.DecrypterTypeName);
+						necroBit.DecryptStrings();
+						Logger.n("Decrypted {0} NecroBit strings ({1} unresolved)",
+							necroBit.StringsDecrypted, necroBit.StringsUnresolved);
+					}
+					else {
+						necroBit.Dispose();
+						necroBit = null;
+					}
+				}
+				catch (System.Exception ex) {
+					Logger.w("NecroBit dynamic restore failed: {0}", ex.Message);
+					necroBit.Dispose();
+					necroBit = null;
+				}
+			}
 
 			proxyCallFixer.Initialize();
 			proxyCallFixer.Find();
@@ -687,6 +724,11 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 				Logger.v("Could not remove decrypter type");
 
 			FixEntryPoint();
+
+			if (necroBit != null) {
+				necroBit.Dispose();
+				necroBit = null;
+			}
 
 			base.DeobfuscateEnd();
 		}
