@@ -111,6 +111,7 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 		EmptyClass emptyClass;
 		ProxyCallFixer proxyCallFixer;
 		NecroBitMethodsRestorer necroBit;
+		NecroBitNativeHookRestorer necroNative;
 
 		bool unpackedNativeFile = false;
 		bool canRemoveDecrypterType = true;
@@ -426,9 +427,24 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 			if (options.NecroBitDynamic && NecroBitMethodsRestorer.IsPresent(module))
 				return false;
 
-			var tokenToNativeCode = new Dictionary<uint,byte[]>();
-			if (!methodsDecrypter.Decrypt(peImage, DeobfuscatedFile, ref dumpedMethods, tokenToNativeCode, unpackedNativeFile))
+			// NecroBit "native JIT-hook" variant (no managed Hashtable cache): the real
+			// IL is bulk-patched into the in-memory image when the loader runs. It is
+			// recovered in-place in DeobfuscateBegin (not here), so skip the static
+			// decrypter that would otherwise throw "Could not initialize decrypter".
+			if (options.NecroBitDynamic && NecroBitNativeHookRestorer.IsPresent(module))
 				return false;
+
+			var tokenToNativeCode = new Dictionary<uint,byte[]>();
+			try {
+				if (!methodsDecrypter.Decrypt(peImage, DeobfuscatedFile, ref dumpedMethods, tokenToNativeCode, unpackedNativeFile))
+					return false;
+			}
+			catch (System.Exception ex) {
+				// Fail soft on unrecognized .NET Reactor method-encryption variants
+				// instead of aborting the whole file with "Could not initialize decrypter".
+				Logger.w("Static methods decrypter failed ({0}); skipping method decryption", ex.Message);
+				return false;
+			}
 
 			newFileData = fileData;
 			return true;
@@ -540,6 +556,24 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 					Logger.w("NecroBit dynamic restore failed: {0}", ex.Message);
 					necroBit.Dispose();
 					necroBit = null;
+				}
+			}
+
+			// NecroBit "native JIT-hook" variant: real IL is bulk-patched into the
+			// in-memory PE image by the loader. Rebuild bodies in place, fold the
+			// anti-tamper opaque-predicate constants (so cflow can collapse the
+			// predicates) and inline strings. No-op unless the shape gate matches.
+			else if (options.NecroBitDynamic && NecroBitNativeHookRestorer.IsPresent(module)) {
+				necroNative = new NecroBitNativeHookRestorer();
+				try {
+					necroNative.Prepare(module, out var st);
+					Logger.n("Restored NecroBit native-hook: {0} bodies, folded {1} anti-tamper reads (strings inlined after cflow)",
+						st.bodies, st.folded);
+				}
+				catch (System.Exception ex) {
+					Logger.w("NecroBit native-hook restore failed: {0}", ex.Message);
+					necroNative.Dispose();
+					necroNative = null;
 				}
 			}
 
@@ -708,6 +742,21 @@ namespace de4dot.code.deobfuscators.dotNET_Reactor.v5 {
 		}
 
 		public override void DeobfuscateEnd() {
+			// NecroBit native-hook: cflow has now collapsed the folded opaque
+			// predicates, so decrypter-call arguments are single constants; inline
+			// the strings before any method removal runs.
+			if (necroNative != null) {
+				try {
+					var st = necroNative.BakeStringsLate(module);
+					Logger.n("Inlined {0}/{1} NecroBit strings ({2} distinct)", st.stringsBaked, st.stringCalls, st.distinctStrings);
+				}
+				catch (System.Exception ex) {
+					Logger.w("NecroBit string inlining failed: {0}", ex.Message);
+				}
+				necroNative.Dispose();
+				necroNative = null;
+			}
+
 			FreePEImage();
 			RemoveProxyDelegates(proxyCallFixer, false);
 			RemoveInlinedMethods();
